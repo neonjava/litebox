@@ -366,7 +366,8 @@ impl SystemPta {
             .derive_key(Some(huk_subkey_derive_inner), kdf_params)
             .map_err(|err| match err {
                 DerivedKeyError::ShimKDFRequired
-                | DerivedKeyError::UnsupportedRebootPersistentKey => TeeResult::NotSupported,
+                | DerivedKeyError::UnsupportedRebootPersistentKey
+                | DerivedKeyError::KeyUnavailable => TeeResult::NotSupported,
                 DerivedKeyError::ShimKDFError(err) => err,
             })?;
 
