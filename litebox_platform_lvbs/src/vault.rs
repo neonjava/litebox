@@ -38,7 +38,8 @@ use crate::mshv::vtl1_mem_layout::{
 use crate::{PageTableManager, mm};
 use alloc::boxed::Box;
 use litebox::utils::TruncateExt;
-use litebox_common_linux::vmem::{PAGE_SIZE, PageRange, VmFlags};
+use litebox_common::{PAGE_SIZE, page::PageRange};
+use litebox_common_linux::vmem::VmFlags;
 use litebox_common_lvbs::PRK_LEN;
 use x86_64::{
     VirtAddr,
