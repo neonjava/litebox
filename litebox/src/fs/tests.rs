@@ -197,6 +197,63 @@ mod in_mem {
     }
 
     #[test]
+    fn denied_truncate_preserves_file() {
+        let ctx = crate::fs::resolver::Context::new();
+        let litebox = LiteBox::new(MockPlatform::new());
+        let mut fs = super::in_mem_fs(&litebox);
+        with_root_privileges(&mut fs, &ctx, |fs, root| {
+            fs.mkdir(root, "/tmp", Mode::RWXU | Mode::RWXG | Mode::RWXO)
+                .unwrap();
+        });
+        let fd = fs
+            .open(
+                &ctx,
+                "/tmp/file",
+                OFlags::CREAT | OFlags::WRONLY,
+                Mode::RUSR,
+            )
+            .unwrap();
+        fs.write(&fd, b"keep", None).unwrap();
+        fs.close(&fd).unwrap();
+
+        for flags in [
+            OFlags::WRONLY | OFlags::TRUNC,
+            OFlags::RDONLY | OFlags::TRUNC,
+        ] {
+            assert!(matches!(
+                fs.open(&ctx, "/tmp/file", flags, Mode::empty()),
+                Err(crate::fs::errors::OpenError::AccessNotAllowed)
+            ));
+        }
+        let fd = fs
+            .open(&ctx, "/tmp/file", OFlags::RDONLY, Mode::empty())
+            .unwrap();
+        let mut buf = [0; 4];
+        assert_eq!(fs.read(&fd, &mut buf, None).unwrap(), 4);
+        assert_eq!(&buf, b"keep");
+
+        let fd = fs
+            .open(
+                &ctx,
+                "/tmp/writable",
+                OFlags::CREAT | OFlags::WRONLY,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .unwrap();
+        fs.write(&fd, b"gone", None).unwrap();
+        fs.close(&fd).unwrap();
+        let fd = fs
+            .open(
+                &ctx,
+                "/tmp/writable",
+                OFlags::RDONLY | OFlags::TRUNC,
+                Mode::empty(),
+            )
+            .unwrap();
+        assert_eq!(fs.read(&fd, &mut buf, None).unwrap(), 0);
+    }
+
+    #[test]
     fn root_directory_creation_and_removal() {
         let ctx = crate::fs::resolver::Context::new();
         let litebox = LiteBox::new(MockPlatform::new());
@@ -1362,6 +1419,43 @@ mod overlay {
 
     fn overlay_fs(litebox: &LiteBox<MockPlatform>, upper: InMem<MockPlatform>) -> super::OverlayFs {
         super::overlay_fs(litebox, upper, TEST_TAR_FILE.into())
+    }
+
+    #[test]
+    fn denied_truncate_preserves_lower_file() {
+        let mut ctx = crate::fs::resolver::Context::new();
+        ctx.set_acting_user(UserInfo {
+            user: 2000,
+            group: 2000,
+        });
+        let litebox = LiteBox::new(MockPlatform::new());
+        let fs = overlay_fs(&litebox, upper([]));
+        let result = fs.open(&ctx, "foo", OFlags::WRONLY | OFlags::TRUNC, Mode::empty());
+        let error = result.err();
+        assert!(
+            matches!(error, Some(crate::fs::errors::OpenError::AccessNotAllowed)),
+            "{error:?}"
+        );
+        let fd = fs.open(&ctx, "foo", OFlags::RDONLY, Mode::empty()).unwrap();
+        let mut buf = [0; 8];
+        assert_eq!(fs.read(&fd, &mut buf, None).unwrap(), 8);
+        assert_eq!(&buf, b"testfoo\n");
+    }
+
+    #[test]
+    fn readonly_truncate_copies_up_writable_lower_file() {
+        let ctx = crate::fs::resolver::Context::new();
+        let litebox = LiteBox::new(MockPlatform::new());
+        let fs = overlay_fs(&litebox, upper([]));
+        let fd = fs
+            .open(&ctx, "foo", OFlags::RDONLY | OFlags::TRUNC, Mode::empty())
+            .unwrap();
+        let mut buf = [0; 8];
+        assert_eq!(fs.read(&fd, &mut buf, None).unwrap(), 0);
+        assert!(matches!(
+            fs.write(&fd, b"x", None),
+            Err(crate::fs::errors::WriteError::NotForWriting)
+        ));
     }
 
     #[test]

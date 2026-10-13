@@ -744,13 +744,57 @@ impl<Platform: sync::RawSyncPrimitivesProvider, Backend: super::backend::Backend
                     }
                     .into());
                 }
-                let file = self.backend.open_file_at(outcome.last, name, flags)?;
+                let (file, deferred_truncate) = if flags.contains(OFlags::TRUNC) {
+                    let preflight = self
+                        .backend
+                        .open_file_at(outcome.last, name, OFlags::PATH)?;
+                    if let PermissionCheck::ByResolver(permissions) = &preflight.permissions
+                        && (!context.can_write(permissions)
+                            || (read_allowed && !context.can_read(permissions)))
+                    {
+                        return Err(OpenError::AccessNotAllowed);
+                    }
+                    let deferred_truncate =
+                        matches!(preflight.permissions, PermissionCheck::ByResolver(_));
+                    let parent = self
+                        .walk_to_directory(
+                            context,
+                            self.backend.root(),
+                            &components[..walked],
+                            &components[..walked],
+                        )
+                        .map_err(|error| match error {
+                            WalkError::Io => OpenError::Io,
+                            WalkError::PathError(error) => error.into(),
+                        })?;
+                    // O_RDONLY | O_TRUNC needs write access for copy-up but remains readable.
+                    let open_flags = if deferred_truncate {
+                        flags.difference(OFlags::TRUNC)
+                            | if write_allowed {
+                                OFlags::empty()
+                            } else {
+                                OFlags::RDWR
+                            }
+                    } else {
+                        flags
+                    };
+                    (
+                        self.backend.open_file_at(parent.handle, name, open_flags)?,
+                        deferred_truncate,
+                    )
+                } else {
+                    (self.backend.open_file_at(outcome.last, name, flags)?, false)
+                };
                 if !path_only
                     && let PermissionCheck::ByResolver(permissions) = &file.permissions
                     && ((read_allowed && !context.can_read(permissions))
-                        || (write_allowed && !context.can_write(permissions)))
+                        || ((write_allowed || deferred_truncate)
+                            && !context.can_write(permissions)))
                 {
                     return Err(OpenError::AccessNotAllowed);
+                }
+                if deferred_truncate {
+                    self.backend.truncate(&file.item, 0)?;
                 }
                 let seek_behavior = self.backend.seek_behavior(&file.item);
                 Ok(insert(Handle::File(file.item), seek_behavior))
